@@ -76,7 +76,8 @@
     (and pom (xml/parse (.getInputStream file pom)))))
 
 (def ^:private license-file-names #{"LICENSE" "LICENSE.txt" "META-INF/LICENSE"
-                                    "META-INF/LICENSE.txt" "license/LICENSE"})
+                                    "META-INF/LICENSE.txt" "license/LICENSE"
+                                    "COPYING"})
 
 (defn- try-raw-license [dep file opts]
   (try
@@ -117,6 +118,36 @@
         string/trim
         (normalize-license opts))))
 
+(defn copyright-line?
+  "True if the string looks like a copyright line."
+  [s]
+  (and (re-find #"(?i)copyright\s+(\(c\)|©)?\s*\d+" s)
+       (not (re-find #"Copyright \(C\) 1989, 1991 Free Software Foundation, Inc. 59 Temple Place," s))))
+
+(defn- try-raw-copyright
+  "Scan license files for copyright."
+  [dep file opts]
+  (try
+    (if-let [entry (some (partial get-entry file) license-file-names)]
+      (with-open [rdr (io/reader (.getInputStream file entry))]
+        (->> rdr
+             line-seq
+             (remove string/blank?)
+             (filter copyright-line?)
+             (string/join " | "))))
+    (catch Exception e
+      (binding [*out* *err*]
+        (println "#   " (str file) (class e) (.getMessage e))))))
+
+(defn try-fallback-copyright [dep file {:keys [copyright-fallbacks]}]
+  (get copyright-fallbacks (str (first dep)) "unknown"))
+
+(defn- get-copyrights [[dep file] opts]
+  "Get the copyrights from each dependency if possible."
+  (let [fns [try-raw-copyright
+             try-fallback-copyright]]
+    (-> (some #(% dep file opts) fns)
+        string/trim)))
 
 (defn safe-slurp [filename]
   (try
@@ -140,8 +171,8 @@
    ":edn"
    (fn [lines]
      (with-out-str (pp/pprint (map
-                                (fn [[artifact version license]]
-                                  [[artifact version] license])
+                                (fn [[artifact version license copyright]]
+                                  [[artifact version] [license copyright]])
                                 lines))))})
 
 (defn prepare-synonyms [synonyms]
@@ -168,8 +199,9 @@ Supported output formats: :text (default), :csv, :edn"
                    :synonyms (prepare-synonyms (safe-slurp "synonyms.edn"))}]
             (->> deps
                  (map #(conj % (get-licenses % opts)))
-                 (map (fn [[[artifact version] file license]]
-                        [artifact version license]))
+                 (map #(conj % (get-copyrights % opts)))
+                 (map (fn [[[artifact version] file license copyright]]
+                        [artifact version license copyright]))
                  format-fn
                  println))
        (main/abort "unknown formatter"))))
